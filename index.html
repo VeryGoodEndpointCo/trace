@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CMTrace Web — Log Viewer</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --surface: #252526;
+    --surface2: #2d2d30;
+    --border: #3e3e42;
+    --text: #cccccc;
+    --text-dim: #858585;
+    --accent: #007acc;
+    --accent2: #0098ff;
+    --row-hover: #2a2d2e;
+    --row-alt: #232323;
+    --error-bg: #3e1f1f;
+    --error-fg: #f48771;
+    --warn-bg: #3e3218;
+    --warn-fg: #cca700;
+    --info-fg: #cccccc;
+    --selected-bg: #094771;
+    --srcA: #0098ff;   /* file A accent */
+    --srcB: #c586c0;   /* file B accent */
+    --srcA-tint: rgba(0,152,255,.07);
+    --srcB-tint: rgba(197,134,192,.09);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Consolas, monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Toolbar ── */
+  #toolbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+
+  #toolbar h1 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent2);
+    white-space: nowrap;
+    margin-right: 6px;
+  }
+
+  #toolbar button {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  #toolbar button:hover { background: var(--accent); border-color: var(--accent); }
+  #toolbar button:disabled { opacity: .4; cursor: not-allowed; }
+  #toolbar button:disabled:hover { background: var(--surface2); border-color: var(--border); }
+
+  .btn-A { border-color: var(--srcA) !important; }
+  .btn-B { border-color: var(--srcB) !important; }
+
+  #searchBox {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    width: 180px;
+    outline: none;
+  }
+  #searchBox:focus { border-color: var(--accent); }
+
+  .sep { width: 1px; height: 20px; background: var(--border); }
+
+  .filter-btn { font-size: 11px; padding: 3px 8px; }
+  .filter-btn.active-error { background: var(--error-bg) !important; color: var(--error-fg) !important; border-color: var(--error-fg) !important; }
+  .filter-btn.active-warn  { background: var(--warn-bg)  !important; color: var(--warn-fg)  !important; border-color: var(--warn-fg)  !important; }
+  .filter-btn.active-info  { background: var(--surface2) !important; color: #4ec9b0 !important; border-color: #4ec9b0 !important; }
+
+  /* source toggle buttons */
+  .src-btn.active-A { background: rgba(0,152,255,.18) !important; color: var(--srcA) !important; border-color: var(--srcA) !important; }
+  .src-btn.active-B { background: rgba(197,134,192,.18) !important; color: var(--srcB) !important; border-color: var(--srcB) !important; }
+
+  /* view mode toggle */
+  #viewToggle { display: none; }
+  #viewToggle.visible { display: inline-flex; }
+  .view-btn.active { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
+
+  #stats {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  /* ── Drop zone ── */
+  #dropZone {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    border: 2px dashed var(--border);
+    margin: 30px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  #dropZone:hover, #dropZone.drag-over {
+    border-color: var(--accent);
+    background: rgba(0,122,204,.06);
+  }
+  #dropZone svg { opacity: .4; }
+  #dropZone p { color: var(--text-dim); font-size: 14px; }
+  #dropZone small { color: var(--text-dim); font-size: 11px; }
+
+  /* ── Main area ── */
+  #main { flex: 1; overflow: hidden; display: none; }
+  #main.split { display: flex; }
+  #main.single { display: block; }
+
+  .pane { overflow: auto; height: 100%; }
+  #main.split .pane { flex: 1; }
+  #main.split #paneA { border-right: 2px solid var(--border); }
+
+  .pane-header {
+    position: sticky; top: 0; z-index: 20;
+    height: 26px; padding: 0 10px;
+    font-size: 11px; font-weight: 600;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: none;
+    align-items: center; justify-content: space-between;
+  }
+  #main.split .pane-header { display: flex; }
+  .pane-header.hdr-A { color: var(--srcA); }
+  .pane-header.hdr-B { color: var(--srcB); }
+
+  /* ── Log table ── */
+  table.logTable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    table-layout: fixed;
+  }
+
+  table.logTable thead {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--surface2);
+  }
+  #main.split table.logTable thead { top: 26px; }
+
+  table.logTable thead th {
+    padding: 5px 8px;
+    text-align: left;
+    border-bottom: 2px solid var(--border);
+    border-right: 1px solid var(--border);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  table.logTable thead th:hover { color: var(--text); }
+  table.logTable thead th .sort-icon { margin-left: 4px; opacity: .5; }
+
+  /* Column widths */
+  .col-idx       { width: 52px; }
+  .col-src       { width: 44px; }
+  .col-type      { width: 58px; }
+  .col-datetime  { width: 158px; }
+  .col-component { width: 140px; }
+  .col-thread    { width: 64px; }
+  .col-msg       { width: auto; }
+
+  table.logTable tbody tr {
+    height: 24px;            /* fixed row height — required for virtual scrolling */
+    cursor: default;
+  }
+  table.logTable tbody tr.alt { background: var(--row-alt); }
+  table.logTable tbody tr:hover { background: var(--row-hover); }
+  table.logTable tbody tr.selected { background: var(--selected-bg) !important; }
+  /* spacer rows hold the scrollbar height for un-rendered rows */
+  table.logTable tbody tr.spacer, table.logTable tbody tr.spacer td {
+    padding: 0; border: 0; background: transparent; height: auto;
+  }
+  table.logTable tbody tr.spacer:hover { background: transparent; }
+
+  /* source tinting (merged view) */
+  tr.src-A td { box-shadow: inset 3px 0 0 var(--srcA); }
+  tr.src-B td { box-shadow: inset 3px 0 0 var(--srcB); }
+  #main.single tr.src-A { background: var(--srcA-tint); }
+  #main.single tr.src-B { background: var(--srcB-tint); }
+  #main.single tr.src-B.alt { background: rgba(197,134,192,.13); }
+
+  table.logTable td {
+    height: 24px;
+    padding: 0 8px;
+    line-height: 24px;       /* center single line within fixed-height row */
+    border-right: 1px solid rgba(255,255,255,.04);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  tr.type-error td { color: var(--error-fg); background: var(--error-bg); }
+  tr.type-warn  td { color: var(--warn-fg);  background: var(--warn-bg);  }
+  tr.type-error.alt td { background: #3a1c1c; }
+  tr.type-warn.alt  td { background: #372e14; }
+  tr.type-error:hover td { background: #4a2222; }
+  tr.type-warn:hover  td { background: #45391a; }
+
+  .badge {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .5px;
+  }
+  .badge-error { background: #c0392b; color: #fff; }
+  .badge-warn  { background: #e67e22; color: #fff; }
+  .badge-info  { background: #2980b9; color: #fff; }
+  .badge-A { background: rgba(0,152,255,.2); color: var(--srcA); border: 1px solid var(--srcA); }
+  .badge-B { background: rgba(197,134,192,.2); color: var(--srcB); border: 1px solid var(--srcB); }
+
+  /* ── Detail panel ── */
+  #detail {
+    display: none;
+    background: var(--surface);
+    border-top: 2px solid var(--border);
+    padding: 8px 12px;
+    font-size: 12px;
+    max-height: 140px;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  #detail.visible { display: block; }
+  #detail-label { font-size: 10px; color: var(--text-dim); margin-bottom: 4px; }
+  #detail-msg { white-space: pre-wrap; word-break: break-all; line-height: 1.6; }
+
+  /* ── Status bar ── */
+  #statusBar {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 11px;
+    padding: 3px 10px;
+    display: none;
+    flex-shrink: 0;
+    gap: 16px;
+  }
+  #statusBar.visible { display: flex; }
+  .status-A { color: var(--srcA); }
+  .status-B { color: var(--srcB); }
+  .status-A:empty, .status-B:empty { display: none; }
+
+  /* per-file close button (status bar + pane headers) */
+  .close-x {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: inherit;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 10px;
+    line-height: 15px;
+    padding: 0 5px;
+    margin-left: 6px;
+    opacity: .8;
+  }
+  .close-x:hover { background: #c0392b; color: #fff; border-color: #c0392b; opacity: 1; }
+
+  mark { background: #f0c04a; color: #000; border-radius: 2px; }
+
+  /* ── Loading spinner ── */
+  #spinner {
+    position: fixed; inset: 0;
+    display: none; align-items: center; justify-content: center;
+    flex-direction: column; gap: 14px;
+    background: rgba(20,20,20,.45);
+    z-index: 1000;
+  }
+  #spinner.visible { display: flex; }
+  #spinner .spin {
+    width: 42px; height: 42px;
+    border: 4px solid var(--border);
+    border-top-color: var(--accent2);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  #spinner .spin-label { font-size: 12px; color: var(--text-dim); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div id="toolbar">
+  <h1>&#9646; CMTrace Web</h1>
+  <button class="btn-A" onclick="document.getElementById('fileA').click()" title="Load primary log">&#128194; File A</button>
+  <button class="btn-B" onclick="document.getElementById('fileB').click()" title="Load second log to compare">&#128194; File B</button>
+  <input type="file" id="fileA" accept=".log,.txt">
+  <input type="file" id="fileB" accept=".log,.txt">
+
+  <span id="viewToggle">
+    <button class="view-btn active" id="viewMerged" onclick="setView('merged')" title="Interleave both files by time">Merged</button>
+    <button class="view-btn" id="viewSplit" onclick="setView('split')" title="Show files side by side">Side&#8209;by&#8209;side</button>
+  </span>
+
+  <div class="sep"></div>
+  <input type="text" id="searchBox" placeholder="Search logs…" title="Ctrl+F">
+  <button id="btnErrors" class="filter-btn" title="Toggle errors">&#9888; Err</button>
+  <button id="btnWarns"  class="filter-btn" title="Toggle warnings">&#9888; Warn</button>
+  <button id="btnInfos"  class="filter-btn" title="Toggle info">&#8505; Info</button>
+
+  <span class="sep" id="srcSep" style="display:none"></span>
+  <button id="btnSrcA" class="src-btn" style="display:none" title="Toggle File A rows">A</button>
+  <button id="btnSrcB" class="src-btn" style="display:none" title="Toggle File B rows">B</button>
+
+  <div class="sep"></div>
+  <button onclick="tailLog()" title="Jump to bottom">&#8595; Tail</button>
+  <button onclick="clearLog()">&#10005; Clear</button>
+  <span id="stats"></span>
+</div>
+
+<!-- Drop zone -->
+<div id="dropZone">
+  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="12" y1="18" x2="12" y2="12"/>
+    <polyline points="9 15 12 12 15 15"/>
+  </svg>
+  <p>Drop a <strong>.log</strong> file here, or click <strong>File A</strong></p>
+  <small>Load a second file (File B) to compare two logs side by side or merged by time</small>
+</div>
+
+<!-- Main area: one or two panes -->
+<div id="main" class="single">
+  <div class="pane" id="paneA">
+    <div class="pane-header hdr-A" id="hdrA"></div>
+    <table class="logTable" id="tableA">
+      <thead id="theadA"></thead>
+      <tbody id="bodyA"></tbody>
+    </table>
+  </div>
+  <div class="pane" id="paneB" style="display:none">
+    <div class="pane-header hdr-B" id="hdrB"></div>
+    <table class="logTable" id="tableB">
+      <thead id="theadB"></thead>
+      <tbody id="bodyB"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Detail panel -->
+<div id="detail">
+  <div id="detail-label">MESSAGE</div>
+  <div id="detail-msg"></div>
+</div>
+
+<!-- Loading spinner -->
+<div id="spinner">
+  <div class="spin"></div>
+  <div class="spin-label">Parsing log…</div>
+</div>
+
+<!-- Status bar -->
+<div id="statusBar">
+  <span id="statusA" class="status-A"></span>
+  <span id="statusB" class="status-B"></span>
+</div>
+
+<script>
+/* ─── State ─── */
+let files = { A: null, B: null };   // { name, entries, format }
+let viewMode   = 'merged';          // 'merged' | 'split'
+let sortCol    = 'datetime';
+let sortAsc    = true;
+let showErrors = true, showWarns = true, showInfos = true;
+let showA = true, showB = true;
+let searchTerm = '';
+let selectedKey = null;             // "src:idx" of the selected row, for highlight persistence
+
+/* ─── CMTrace log regex ─── */
+const RE_CM = /\<!\[LOG\[([\s\S]*?)\]LOG\]!\>\s*<time="([^"]+)"\s+date="([^"]+)"\s+component="([^"]*)"\s+context="([^"]*)"\s+type="([^"]*)"\s+thread="([^"]*)"\s+file="([^"]*)"\s*>/g;
+
+/* ─── Parsing ─── */
+function parseCMTrace(text) {
+  const entries = [];
+  let m; RE_CM.lastIndex = 0;
+  while ((m = RE_CM.exec(text)) !== null) {
+    const [, msg, time, date, component, , typeNum, thread, file] = m;
+    entries.push({
+      msg: msg.trim(), time, date, component, thread, file,
+      typeNum: parseInt(typeNum, 10) || 1,
+      datetime: parseDateTime(date, time),
+    });
+  }
+  return entries;
+}
+
+function parseDateTime(date, time) {
+  try {
+    const [month, day, year] = date.split('-');
+    const timePart = time.replace(/[+-]\d+$/, '');
+    return new Date(`${year}-${month.padStart(2,'0')}-${day.padStart(2,'0')}T${timePart}`);
+  } catch { return null; }
+}
+
+function formatDate(dt) {
+  if (!dt || isNaN(dt)) return '';
+  return dt.toLocaleDateString('en-US', {month:'2-digit',day:'2-digit',year:'numeric'})
+    + ' ' + dt.toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit'});
+}
+
+function parsePlainText(text) {
+  const entries = [];
+  const lines = text.split(/\r?\n/);
+  const TSRE  = /^(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s*(.*)/;
+  const TSRE2 = /^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(.*)/;
+  const TSRE3 = /^(\d{2}[-/]\d{2}[-/]\d{4}\s+\d{2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)\s*(.*)/i;
+  const SEVERITY = /\b(ERROR|FATAL|CRITICAL|CRIT|WARN(?:ING)?|INFO(?:RMATION)?|DEBUG|TRACE|NOTICE|SEVERE)\b/i;
+
+  lines.forEach((line, i) => {
+    if (!line.trim()) return;
+    let ts = null, rest = line;
+    const m1 = line.match(TSRE), m2 = line.match(TSRE2), m3 = line.match(TSRE3);
+    if (m1)      { ts = new Date(m1[1]); rest = m1[2]; }
+    else if (m2) { ts = new Date(m2[1] + ' ' + new Date().getFullYear()); rest = m2[2]; }
+    else if (m3) { ts = new Date(m3[1]); rest = m3[2]; }
+
+    const sm = rest.match(SEVERITY);
+    let typeNum = 1;
+    if (sm) {
+      const sev = sm[1].toUpperCase();
+      if (['ERROR','FATAL','CRITICAL','CRIT','SEVERE'].includes(sev)) typeNum = 3;
+      else if (['WARN','WARNING'].includes(sev)) typeNum = 2;
+    }
+    entries.push({ msg: line.trim(), time: ts?ts.toTimeString().split(' ')[0]:'', date: ts?ts.toLocaleDateString():'', component:'', thread:'', file:'', typeNum, datetime: ts, rawLine: i+1 });
+  });
+  return entries;
+}
+
+function parseLog(text) {
+  let entries = parseCMTrace(text);
+  if (entries.length > 0) return { entries, format: 'CMTrace' };
+  entries = parsePlainText(text);
+  return { entries, format: 'Plain Text' };
+}
+
+/* ─── Rendering helpers ─── */
+function typeClass(n) { return n === 3 ? 'type-error' : n === 2 ? 'type-warn' : ''; }
+function typeBadge(n) {
+  if (n === 3) return '<span class="badge badge-error">ERROR</span>';
+  if (n === 2) return '<span class="badge badge-warn">WARN</span>';
+  return '<span class="badge badge-info">INFO</span>';
+}
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function highlight(s) {
+  if (!searchTerm) return escHtml(s);
+  const escaped = escHtml(s);
+  const re = new RegExp(escHtml(searchTerm).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi');
+  return escaped.replace(re, m => `<mark>${m}</mark>`);
+}
+
+function hasTwoFiles() { return files.A && files.B; }
+
+function headerHtml(showSrc) {
+  const arrow = c => sortCol === c ? (sortAsc ? ' ▲' : ' ▼') : '';
+  return `<tr>
+    <th class="col-idx"  data-col="idx"      onclick="sortBy('idx')">#${arrow('idx')}</th>
+    ${showSrc ? `<th class="col-src" data-col="source" onclick="sortBy('source')">Src${arrow('source')}</th>` : ''}
+    <th class="col-type" data-col="type"     onclick="sortBy('type')">Type${arrow('type')}</th>
+    <th class="col-datetime" data-col="datetime" onclick="sortBy('datetime')">Date / Time${arrow('datetime')}</th>
+    <th class="col-component" data-col="component" onclick="sortBy('component')">Component${arrow('component')}</th>
+    <th class="col-thread" data-col="thread" onclick="sortBy('thread')">Thread${arrow('thread')}</th>
+    <th class="col-msg"  data-col="msg"      onclick="sortBy('msg')">Message${arrow('msg')}</th>
+  </tr>`;
+}
+
+function buildRow(e, displayIdx, showSrc) {
+  const dt = e.datetime ? formatDate(e.datetime) : (e.date && e.time ? `${e.date} ${e.time}` : '');
+  const srcBadge = e.source === 'A' ? '<span class="badge badge-A">A</span>' : '<span class="badge badge-B">B</span>';
+  const alt = displayIdx % 2 === 0 ? ' alt' : '';
+  const key = e.source + ':' + e._idx;
+  const sel = key === selectedKey ? ' selected' : '';
+  return `<tr class="${typeClass(e.typeNum)} src-${e.source}${alt}${sel}" data-key="${key}" onclick="selectRow(this,'${e.source}',${e._idx})">
+    <td class="col-idx">${displayIdx}</td>
+    ${showSrc ? `<td class="col-src">${srcBadge}</td>` : ''}
+    <td class="col-type">${typeBadge(e.typeNum)}</td>
+    <td class="col-datetime">${escHtml(dt)}</td>
+    <td class="col-component" title="${escHtml(e.component)}">${highlight(e.component)}</td>
+    <td class="col-thread">${escHtml(e.thread)}</td>
+    <td class="col-msg" title="${escHtml(e.msg)}">${highlight(e.msg)}</td>
+  </tr>`;
+}
+
+function passesFilter(e) {
+  if (e.typeNum === 3 && !showErrors) return false;
+  if (e.typeNum === 2 && !showWarns)  return false;
+  if (e.typeNum === 1 && !showInfos)  return false;
+  if (e.source === 'A' && !showA) return false;
+  if (e.source === 'B' && !showB) return false;
+  if (searchTerm) {
+    const q = searchTerm.toLowerCase();
+    if (!e.msg.toLowerCase().includes(q) && !e.component.toLowerCase().includes(q)) return false;
+  }
+  return true;
+}
+
+function sortEntries(arr) {
+  const key = sortCol === 'idx' ? '_idx' : sortCol === 'type' ? 'typeNum' : sortCol;
+  arr.sort((a, b) => {
+    let av, bv;
+    if (sortCol === 'datetime') { av = a.datetime || 0; bv = b.datetime || 0; }
+    else if (sortCol === 'source') { av = a.source; bv = b.source; }
+    else { av = a[key] ?? ''; bv = b[key] ?? ''; }
+    if (av < bv) return sortAsc ? -1 : 1;
+    if (av > bv) return sortAsc ?  1 : -1;
+    return 0;
+  });
+  return arr;
+}
+
+/* ─── Virtual scrolling ─── */
+const ROW_H = 24;     // must match CSS tbody tr height
+const BUFFER = 10;    // extra rows rendered above/below the viewport
+let paneState = { A: null, B: null };  // { data, showSrc, colCount }
+
+/* ─── Main render: compute filtered/sorted data, then paint only what's visible ─── */
+function render() {
+  const twoFiles = hasTwoFiles();
+  const main = document.getElementById('main');
+  const paneB = document.getElementById('paneB');
+  const split = twoFiles && viewMode === 'split';
+
+  main.className = split ? 'split' : 'single';
+  paneB.style.display = split ? '' : 'none';
+
+  if (split) {
+    // Two independent tables, no Src column needed (header tells the file)
+    setupPane('A', sortEntries(files.A.entries.filter(passesFilter)), false);
+    setupPane('B', sortEntries(files.B.entries.filter(passesFilter)), false);
+    document.getElementById('hdrA').innerHTML = paneHeaderHtml('A');
+    document.getElementById('hdrB').innerHTML = paneHeaderHtml('B');
+  } else {
+    // Single merged table into pane A
+    let merged = [];
+    if (files.A) merged = merged.concat(files.A.entries);
+    if (files.B) merged = merged.concat(files.B.entries);
+    setupPane('A', sortEntries(merged.filter(passesFilter)), twoFiles);
+    paneState.B = null;
+  }
+  updateStats();
+}
+
+// Prepare a pane's header + virtualized body for the given (already filtered+sorted) data
+function setupPane(src, data, showSrc) {
+  paneState[src] = { data, showSrc, colCount: showSrc ? 7 : 6 };
+  document.getElementById('thead' + src).innerHTML = headerHtml(showSrc);
+  paintPane(src);
+}
+
+function spacerRow(h, cols) {
+  return `<tr class="spacer"><td colspan="${cols}" style="height:${h}px"></td></tr>`;
+}
+
+function closeBtnHtml(slot, label) {
+  return `<button class="close-x" onclick="closeFile('${slot}');event.stopPropagation();" title="Close file ${slot}">${label}</button>`;
+}
+function paneHeaderHtml(slot) {
+  return `<span>◤ ${slot} — ${escHtml(files[slot].name)}</span>${closeBtnHtml(slot, '✕ close')}`;
+}
+function updateStatusBar() {
+  ['A','B'].forEach(slot => {
+    const el = document.getElementById('status' + slot);
+    const f = files[slot];
+    el.innerHTML = f
+      ? `${slot}: ${escHtml(f.name)} — ${f.format}, ${f.entries.length} entries ${closeBtnHtml(slot, '✕')}`
+      : '';
+  });
+}
+
+// Render only the rows in (and near) the viewport; spacer rows hold the rest of the height
+function paintPane(src) {
+  const st = paneState[src];
+  if (!st) return;
+  const pane = document.getElementById('pane' + src);
+  const body = document.getElementById('body' + src);
+  const total = st.data.length;
+
+  const scrollTop = pane.scrollTop;
+  const clientH = pane.clientHeight || 600;
+  const visible = Math.ceil(clientH / ROW_H) + BUFFER * 2;
+
+  let start = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+  if (start > Math.max(0, total - visible)) start = Math.max(0, total - visible);
+  const end = Math.min(total, start + visible);
+
+  const topH = start * ROW_H;
+  const botH = Math.max(0, (total - end) * ROW_H);
+
+  let html = '';
+  if (topH > 0) html += spacerRow(topH, st.colCount);
+  for (let i = start; i < end; i++) html += buildRow(st.data[i], i + 1, st.showSrc);
+  if (botH > 0) html += spacerRow(botH, st.colCount);
+  body.innerHTML = html;
+}
+
+function totalEntries() {
+  return (files.A ? files.A.entries.length : 0) + (files.B ? files.B.entries.length : 0);
+}
+function visibleCount() {
+  if (viewMode === 'split' && hasTwoFiles())
+    return (paneState.A ? paneState.A.data.length : 0) + (paneState.B ? paneState.B.data.length : 0);
+  return paneState.A ? paneState.A.data.length : 0;
+}
+
+function updateStats() {
+  let err = 0, warn = 0;
+  ['A','B'].forEach(s => { if (files[s]) files[s].entries.forEach(e => { if (e.typeNum===3) err++; else if (e.typeNum===2) warn++; }); });
+  document.getElementById('stats').textContent =
+    `${visibleCount()} / ${totalEntries()} shown  •  ${err} errors  •  ${warn} warnings`;
+}
+
+/* ─── Row selection / detail ─── */
+function selectRow(tr, src, idx) {
+  document.querySelectorAll('tr.selected').forEach(r => r.classList.remove('selected'));
+  tr.classList.add('selected');
+  selectedKey = src + ':' + idx;
+  const e = files[src].entries[idx];
+  const tag = hasTwoFiles() ? `[File ${src} — ${files[src].name}]\n` : '';
+  document.getElementById('detail-msg').textContent = tag + e.msg;
+  document.getElementById('detail-label').textContent = 'MESSAGE';
+  document.getElementById('detail').classList.add('visible');
+}
+
+/* ─── Sorting ─── */
+function sortBy(col) {
+  if (sortCol === col) sortAsc = !sortAsc;
+  else { sortCol = col; sortAsc = true; }
+  render();
+}
+
+/* ─── View mode ─── */
+function setView(mode) {
+  viewMode = mode;
+  document.getElementById('viewMerged').classList.toggle('active', mode === 'merged');
+  document.getElementById('viewSplit').classList.toggle('active', mode === 'split');
+  render();
+}
+
+/* ─── Tail ─── */
+function tailLog() {
+  ['A','B'].forEach(src => {
+    const pane = document.getElementById('pane' + src);
+    if (pane.offsetParent !== null && paneState[src]) {
+      pane.scrollTop = pane.scrollHeight;
+      paintPane(src);
+    }
+  });
+}
+
+/* ─── Spinner ─── */
+function showSpinner(label) {
+  const sp = document.getElementById('spinner');
+  if (label) sp.querySelector('.spin-label').textContent = label;
+  sp.classList.add('visible');
+}
+function hideSpinner() { document.getElementById('spinner').classList.remove('visible'); }
+
+/* ─── Close a single file (keep the other one loaded) ─── */
+function closeFile(slot) {
+  files[slot] = null;
+  paneState[slot] = null;
+  // clear selection/detail if the selected row belonged to the closed file
+  if (selectedKey && selectedKey.indexOf(slot + ':') === 0) {
+    selectedKey = null;
+    document.getElementById('detail').classList.remove('visible');
+  }
+  // nothing left → full reset
+  if (!files.A && !files.B) { clearLog(); return; }
+  // only one file remains: comparison views no longer apply, fall back to merged
+  viewMode = 'merged';
+  document.getElementById('viewMerged').classList.add('active');
+  document.getElementById('viewSplit').classList.remove('active');
+  document.getElementById('bodyB').innerHTML = '';
+  document.getElementById('theadB').innerHTML = '';
+  // re-enable both source filters so the remaining file can't be left hidden
+  showA = showB = true;
+  document.getElementById('btnSrcA').classList.add('active-A');
+  document.getElementById('btnSrcB').classList.add('active-B');
+  updateSourceUI();
+  updateStatusBar();
+  render();
+}
+
+/* ─── Clear ─── */
+function clearLog() {
+  files = { A: null, B: null };
+  paneState = { A: null, B: null };
+  selectedKey = null;
+  ['A','B'].forEach(s => { document.getElementById('body'+s).innerHTML=''; document.getElementById('thead'+s).innerHTML=''; });
+  document.getElementById('main').style.display = 'none';
+  document.getElementById('dropZone').style.display = '';
+  document.getElementById('detail').classList.remove('visible');
+  document.getElementById('statusBar').classList.remove('visible');
+  document.getElementById('stats').textContent = '';
+  updateSourceUI();
+}
+
+/* ─── Source filter / view UI visibility ─── */
+function updateSourceUI() {
+  const two = hasTwoFiles();
+  document.getElementById('viewToggle').classList.toggle('visible', two);
+  document.getElementById('srcSep').style.display = two ? '' : 'none';
+  document.getElementById('btnSrcA').style.display = two ? '' : 'none';
+  document.getElementById('btnSrcB').style.display = two ? '' : 'none';
+}
+
+/* ─── Load file ─── */
+function loadFile(file, slot) {
+  showSpinner('Reading ' + file.name + '…');
+  const reader = new FileReader();
+  reader.onload = ev => {
+    // Defer the heavy parse/render one frame so the spinner is actually painted first
+    requestAnimationFrame(() => {
+      const { entries, format } = parseLog(ev.target.result);
+      entries.forEach((en, i) => { en._idx = i; en.source = slot; });
+      files[slot] = { name: file.name, entries, format };
+
+      document.getElementById('dropZone').style.display = 'none';
+      document.getElementById('main').style.display = '';
+
+      document.getElementById('statusBar').classList.add('visible');
+      updateStatusBar();
+
+      updateSourceUI();
+      render();
+      tailLog();
+      hideSpinner();
+    });
+  };
+  reader.onerror = () => { hideSpinner(); alert('Could not read file: ' + file.name); };
+  reader.readAsText(file);
+}
+
+/* ─── Inputs ─── */
+document.getElementById('fileA').addEventListener('change', function() {
+  if (this.files[0]) loadFile(this.files[0], 'A'); this.value = '';
+});
+document.getElementById('fileB').addEventListener('change', function() {
+  if (this.files[0]) loadFile(this.files[0], 'B'); this.value = '';
+});
+
+/* ─── Filter buttons ─── */
+function wireToggle(id, getter, setter, cls) {
+  const btn = document.getElementById(id);
+  btn.classList.add(cls);
+  btn.addEventListener('click', function() {
+    setter(!getter());
+    this.classList.toggle(cls, getter());
+    render();
+  });
+}
+wireToggle('btnErrors', () => showErrors, v => showErrors = v, 'active-error');
+wireToggle('btnWarns',  () => showWarns,  v => showWarns  = v, 'active-warn');
+wireToggle('btnInfos',  () => showInfos,  v => showInfos  = v, 'active-info');
+wireToggle('btnSrcA',   () => showA,      v => showA = v, 'active-A');
+wireToggle('btnSrcB',   () => showB,      v => showB = v, 'active-B');
+
+/* ─── Search (debounced) ─── */
+let searchTimer = null;
+document.getElementById('searchBox').addEventListener('input', function() {
+  const val = this.value.trim();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { searchTerm = val; render(); }, 120);
+});
+
+/* ─── Drag & drop (drop onto left half = A, right half = B once two-pane) ─── */
+const dropZone = document.getElementById('dropZone');
+['dragenter','dragover'].forEach(evt =>
+  document.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.add('drag-over'); }));
+['dragleave','drop'].forEach(evt =>
+  document.addEventListener(evt, e => { e.preventDefault(); dropZone.classList.remove('drag-over'); }));
+document.addEventListener('drop', e => {
+  const dropped = Array.from(e.dataTransfer.files).filter(f => f);
+  if (!dropped.length) return;
+  if (dropped.length >= 2) {            // two files dropped at once → A and B
+    loadFile(dropped[0], 'A');
+    loadFile(dropped[1], 'B');
+    return;
+  }
+  // single file: fill A first, then B
+  const slot = !files.A ? 'A' : !files.B ? 'B' : 'A';
+  loadFile(dropped[0], slot);
+});
+dropZone.addEventListener('click', () => document.getElementById('fileA').click());
+
+/* ─── Keyboard ─── */
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); document.getElementById('searchBox').focus(); }
+  if (e.key === 'Escape') { document.getElementById('detail').classList.remove('visible'); document.getElementById('searchBox').blur(); }
+  if (e.key === 'End' && !e.target.matches('input')) tailLog();
+});
+
+/* ─── Virtual-scroll repaint on scroll (rAF-throttled) ─── */
+['A','B'].forEach(src => {
+  const pane = document.getElementById('pane' + src);
+  let ticking = false;
+  pane.addEventListener('scroll', () => {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => { paintPane(src); ticking = false; });
+  });
+});
+
+/* repaint visible window after a resize (viewport height changed) */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { paintPane('A'); paintPane('B'); }, 100);
+});
+
+/* init */
+updateSourceUI();
+</script>
+</body>
+</html>
